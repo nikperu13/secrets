@@ -6,11 +6,11 @@ const bodyParser = require("body-parser");
 const ejs = require("ejs");
 const mongoose = require("mongoose");
 
-// salting & hashing package
-var bcrypt = require("bcrypt");
+const session = require("express-session");
+const passport = require("passport")
+const passportLocalMongoose = require("passport-local-mongoose")
 
-// needed to specify number of saltrounds for "bcrypt"
-const saltRounds = 10;
+
 
 const app = express();
 
@@ -18,20 +18,48 @@ app.use(express.static("public"));
 app.set("view engine","ejs");
 app.use(bodyParser.urlencoded({extended:true}));
 
+// configuring session and passport
+app.use(session({
+    secret:"Our little secret.",
+    resave: false,
+    saveUninitialized: false
+}));
+
+// initialize passport
+app.use(passport.initialize());
+app.use(passport.session());
+
+
+
 // NOTE: The created mongoDB database won't appear in either mongo 
 // shell or robo 3t until a document/object has been created
 // and saved into said database
 mongoose.connect("mongodb://localhost:27017/userDB", {useNewUrlParser: true, useUnifiedTopology: true});
-
+mongoose.set("useCreateIndex",true);
 // slightly different from before
-// this is now a object created with mongoose.Schema!
+// this is now a object created with mongoose.Schema
+// needed when wanted to use plugins! i.e .plugin()
 const userSchema = new mongoose.Schema({
     email: String,
     password: String
 })
 
+userSchema.plugin(passportLocalMongoose);
 
-const User = mongoose.model("User", userSchema)
+
+const User = new mongoose.model("User", userSchema);
+
+passport.use(User.createStrategy());
+
+passport.serializeUser(User.serializeUser());
+passport.deserializeUser(User.deserializeUser());
+
+// NOTE: while running locally it the web app will
+// remember the user is logged in but once we
+// restart app.js the cookies will be deleted
+// GOAL: use heroku alongside mongoAtlas to be 
+// able to deploy web app via the server and
+// solve the issue
 
 
 app.get("/", function(req,res){
@@ -43,51 +71,53 @@ app.get("/login", function(req,res){
 app.get("/register", function(req,res){
     res.render("register");
 })
-app.post("/register", function(req,res){
-   
-    bcrypt.hash(req.body.password, saltRounds, function(err,hash){
-        // for the password use "hash" that's being returned by
-        // the bcrypt.hash anonymous function
-        const newUser = new User ({
-            email: req.body.username,
-            password: hash
-        });
-    
-        // Once user is created only then can they see 
-        // the secrets page
-        // if no error send user to secrets page
-        newUser.save(function(err){
-            if(!err){
-                res.render("secrets");
-            }else{
-                console.log(err)
-            }
-        })
-    })
-
-    
+app.get("/secrets", function(req,res){
+    // check if user is logged in and has active cookies
+    //if not send to login screens
+    if(req.isAuthenticated()){
+        res.render("secrets");
+    }else{
+        res.redirect("/login");
+    }
 })
-app.post("/login", function(req,res){
-    const email = req.body.username
-    const password = req.body.password
+app.get("/logout", function(req,res){
+    // logout using passport
+    req.logout();
+    res.redirect("/");
+})
 
-    // find requested user and check if the email and password
-    // matches a current users credentials
-    User.findOne({email: email},function(err,foundUser){
-        if(!err){
-            if(foundUser){
-                bcrypt.compare(password, foundUser.password, function(err, result){
-                    // bcrypt.compare will an err or result(boolean) if the password
-                    // matches after checking for salt rounds and hash
-                    if(result === true){
-                        res.render("secrets");
-                    }
-                })
-            }
+app.post("/register", function(req,res){
+    // using the passport-local-mongoose package
+    // returns err or the new registered user
+    User.register({username: req.body.username}, req.body.password, function(err,user){
+        if(err){
+            console.log(err)
+            res.redirect("/register");
         }else{
-            console.log(err);
+            // using passport we authenticate the user
+            // sends cookie ot browser with user info(authorization)
+            passport.authenticate("local")(req,res,function(){
+                res.redirect("/secrets");
+            })
         }
     })
+})
+app.post("/login", function(req,res){
+   const user = new User({
+       username: req.body.username,
+       password: req.body.password
+   })
+
+   req.login(user, function(err){
+       if(err){
+            console.log(err)
+       }else{
+            // using passport we authenticate the user
+            passport.authenticate("local")(req,res,function(){
+                res.redirect("/secrets");
+            })
+        }
+   })
 })
 
 app.listen(3000, function(){
